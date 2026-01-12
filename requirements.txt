@@ -1,0 +1,10 @@
+fastapi
+pydantic-settings
+loguru
+pandas
+openpyxl
+pillow
+openai
+python-dotenv
+google-generativeai
+httpx
