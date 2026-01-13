@@ -14,7 +14,10 @@
       <div class="panel-body">
         <!-- Step 1: Grabbing -->
         <div v-if="status === 'idle'" class="step-box">
-          <p class="page-info">当前：{{ pageType }}</p>
+          <div class="page-info">
+            <div class="info-label-top">当前商品：</div>
+            <div class="info-title">{{ pageType }}</div>
+          </div>
           <button @click="handleGrab" class="action-btn">一键抓取商品</button>
         </div>
 
@@ -23,7 +26,7 @@
           <div class="product-preview-vertical">
             <!-- Gallery Selector -->
             <div class="gallery-selector">
-              <p class="section-title">选择主图 (橱窗图)</p>
+              <p class="section-title">选择橱窗主图</p>
               <div class="gallery-scroll">
                 <div 
                   v-for="(img, idx) in productData.gallery_images" 
@@ -58,27 +61,40 @@
               <div v-else class="no-data-hint">
                 未检测到详情图，请尝试手动向下滚动商品详情区域后再抓取
               </div>
-              <p class="hint-text" v-if="productData.detail_images.length > 0">点击图片可将其设为主图</p>
             </div>
 
             <div class="info-vertical">
-              <input v-model="productData.name" placeholder="商品名称" class="input-field" />
-              <textarea v-model="productData.detail" placeholder="简要描述" class="textarea-field"></textarea>
-              <textarea v-model="productData.attributes" placeholder="规格参数" class="textarea-field small-text" rows="4"></textarea>
+              <div class="info-item">
+                <label class="info-label">商品标题</label>
+                <div class="input-wrapper">
+                  <input v-model="productData.name" placeholder="请输入商品名称" class="input-field-new" />
+                </div>
+              </div>
+
+              <!-- 详情描述暂时隐藏 -->
+              <!-- <textarea v-model="productData.detail" placeholder="简要描述" class="textarea-field"></textarea> -->
               
-              <div class="options-group">
-                <label class="checkbox-label">
+              <div class="info-item">
+                <label class="info-label">规格参数</label>
+                <div class="input-wrapper">
+                  <textarea v-model="productData.attributes" placeholder="抓取到的规格信息" class="textarea-field-new" rows="5"></textarea>
+                </div>
+              </div>
+              
+              <div class="options-group-new">
+                <label class="checkbox-label-new">
                   <input type="checkbox" v-model="needWhiteBg" />
-                  <span>生成白底图</span>
+                  <span class="checkbox-custom"></span>
+                  <span class="checkbox-text">AI生成白底图</span>
                 </label>
               </div>
             </div>
           </div>
-          <button v-if="needWhiteBg" @click="handleGenerateWhiteBg" :disabled="isGenerating" class="action-btn">
-            {{ isGenerating ? '正在生成白底图...' : '第一步：生成白底图' }}
+          <button v-if="needWhiteBg" @click="handleGenerateWhiteBg" :disabled="isGeneratingWhiteBg" class="action-btn">
+            {{ isGeneratingWhiteBg ? '正在生成白底图...' : '生成白底图' }}
           </button>
           <button v-else @click="handleGenerate" :disabled="isGenerating" class="action-btn generate-btn">
-            {{ isGenerating ? '生成中...' : '直接生成场景图' }}
+            {{ isGenerating ? '生成中...' : '直接生成商品主图' }}
           </button>
           <button @click="status = 'idle'" class="link-btn">重新抓取</button>
         </div>
@@ -86,53 +102,79 @@
         <!-- Step 2.5: White BG Review -->
         <div v-if="status === 'white_bg_review'" class="step-box">
           <div class="review-container">
-            <p class="step-title">请确认白底图质量</p>
+            <div class="review-header">
+              <p class="step-title-new">确认白底图</p>
+            </div>
+            
             <div class="compare-box">
               <div class="compare-item">
-                <span>原图</span>
-                <img :src="productData.image" class="preview-img-small" />
+                <div class="img-label">原图参考</div>
+                <div class="img-frame">
+                  <img :src="productData.image" class="preview-img-small" />
+                </div>
               </div>
               <div class="compare-item">
-                <span>白底图</span>
-                <img :src="whiteBgBase64 || getFullUrl(whiteBgUrl)" class="preview-img-large highlight" />
+                <div class="img-label">白底图</div>
+                <div class="img-frame highlight-frame">
+                  <div v-if="isGeneratingWhiteBg" class="generating-placeholder">
+                    <div class="spinner-small"></div>
+                    <span>正在生成白底图...</span>
+                  </div>
+                  <img v-else :src="whiteBgBase64 || getFullUrl(whiteBgUrl)" class="preview-img-large" />
+                </div>
               </div>
             </div>
+
             <div class="review-actions" v-if="!isGenerating">
-              <button @click="handleConfirmWhiteBg" class="action-btn confirm-btn">确认，生成场景图</button>
+              <button @click="handleConfirmWhiteBg" class="action-btn confirm-btn">
+                <span>确认，生成商品主图</span>
+                <i class="icon-next"></i>
+              </button>
               <button @click="handleGenerateWhiteBg" :disabled="isGenerating" class="action-btn retry-btn">
-                {{ isGenerating ? '重新生成中...' : '不合格，重新生成' }}
+                不合格，重新生成
               </button>
             </div>
-            <button @click="status = 'grabbed'" class="link-btn">返回修改信息</button>
+            
+            <div class="review-footer">
+              <button @click="status = 'grabbed'" class="link-btn-new">返回修改信息</button>
+            </div>
           </div>
         </div>
 
-        <!-- Step 3: Results -->
-        <div v-if="status === 'completed' || status === 'failed'" class="step-box">
+        <!-- Step 3: Results & Progressive Loading -->
+        <div v-if="status === 'completed' || status === 'failed' || status === 'processing'" class="step-box">
           <div v-if="status === 'failed'" class="error-msg">
             失败: {{ error }}
             <button @click="status = 'grabbed'" class="small-btn">重试</button>
           </div>
           
-          <div v-if="status === 'completed'" class="results-list">
-            <div v-for="(img, index) in resultImages" :key="index" class="result-item-vertical">
+          <div class="results-list">
+            <!-- 优先级：如果正在生成且有 phrases，按 phrases 数量占位 -->
+            <div 
+              v-for="(phrase, index) in (phrases.length > 0 ? phrases : resultImages)" 
+              :key="index" 
+              class="result-item-vertical"
+            >
               <div class="image-wrapper">
-                <img 
-                  :src="resultImagesBase64[index] || getFullUrl(img)" 
-                  class="result-img-full" 
-                  @error="handleImageError($event, index)"
-                />
-                <div class="image-loading-overlay" v-if="loadingImages[index]">
-                  <span>加载中...</span>
+                <template v-if="resultImagesBase64[index] || resultImages[index]">
+                  <img 
+                    :src="resultImagesBase64[index] || getFullUrl(resultImages[index])" 
+                    class="result-img-full" 
+                    @error="handleImageError($event, index)"
+                  />
+                </template>
+                <!-- 骨架屏占位 -->
+                <div v-else class="skeleton-placeholder">
+                  <div class="skeleton-shimmer"></div>
+                  <div class="skeleton-text">AI 正在绘制第 {{ index + 1 }} 张图...</div>
                 </div>
               </div>
-              <div class="result-actions">
-                <a :href="getFullUrl(img)" target="_blank" class="download-link">查看原图</a>
-                <span class="retry-load-btn" @click="reloadImage(index)">加载失败? 刷新</span>
+              <div class="result-info">
+                <p class="phrase-text">{{ phrases[index] || '正在生成描述...' }}</p>
               </div>
             </div>
           </div>
-          <button @click="status = 'idle'" class="action-btn mt-10">继续生成</button>
+          <button v-if="!isGenerating" @click="status = 'idle'" class="action-btn mt-10">重新生成</button>
         </div>
 
         <!-- Progress Overlay -->
@@ -149,16 +191,19 @@
 import { ref, onMounted } from 'vue';
 
 const showPanel = ref(false);
-const status = ref<'idle' | 'grabbed' | 'white_bg_review' | 'completed' | 'failed'>('idle');
+const status = ref<'idle' | 'grabbed' | 'white_bg_review' | 'processing' | 'completed' | 'failed'>('idle');
 const isGenerating = ref(false);
+const isGeneratingWhiteBg = ref(false);
 const needWhiteBg = ref(true);
 const whiteBgUrl = ref('');
 const whiteBgBase64 = ref('');
 const error = ref('');
 const resultImages = ref<string[]>([]);
 const resultImagesBase64 = ref<string[]>([]);
+const phrases = ref<string[]>([]);
+const pollingTimer = ref<any>(null);
+const currentTaskId = ref('');
 const currentProductIndex = ref<number | null>(null);
-const loadingImages = ref<boolean[]>([]);
 
 // 图片加载错误处理
 const handleImageError = (event: Event, index: number) => {
@@ -170,27 +215,6 @@ const handleImageError = (event: Event, index: number) => {
   }
 };
 
-// 手动刷新图片
-const reloadImage = (index: number) => {
-  const imgUrl = resultImages.value[index];
-  if (!imgUrl) return;
-  
-  loadingImages.value[index] = true;
-  const fullUrl = getFullUrl(imgUrl);
-  
-  // 添加随机参数强制绕过浏览器缓存
-  const separator = fullUrl.includes('?') ? '&' : '?';
-  const timestampedUrl = `${fullUrl}${separator}t=${Date.now()}`;
-  
-  // 查找对应的图片元素并更新
-  const images = document.querySelectorAll('.result-img-full');
-  if (images[index]) {
-    (images[index] as HTMLImageElement).src = timestampedUrl;
-    setTimeout(() => {
-      loadingImages.value[index] = false;
-    }, 1000);
-  }
-};
 const pageType = ref('未知页面');
 
 const productData = ref({
@@ -206,12 +230,26 @@ const productData = ref({
 const BACKEND_URL = 'http://localhost:8000';
 
 onMounted(() => {
-  pageType.value = '1688 详情页';
+  // 预抓取页面标题
+  const title = document.querySelector('.title-content h1')?.textContent?.trim() || 
+                document.querySelector('.od-title h1')?.textContent?.trim() || 
+                document.title;
+  if (title) {
+    pageType.value = title;
+  }
 });
 
 const getFullUrl = (path: string) => {
+  if (!path) return '';
   if (path.startsWith('http')) return path;
-  return `${BACKEND_URL}${path}`;
+  if (path.startsWith('data:')) return path;
+  
+  // 确保路径以 / 开头
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  // 兼容 Windows 风格的反斜杠
+  const webPath = normalizedPath.replace(/\\/g, '/');
+  
+  return `${BACKEND_URL}${webPath}`;
 };
 
 const handleGrab = async () => {
@@ -449,17 +487,43 @@ const grabProductInfo = async () => {
   let detailImgUrls: string[] = [];
   
   const getDetailImagesFromContainer = (container: Element | ShadowRoot) => {
-    const imgs = Array.from(container.querySelectorAll('img')).filter(img => {
-      // 1. 过滤掉“店铺推荐”区域的图片
-      const isRecommendation = img.closest('.sdmap-dynamic-offer-list, .desc-dynamic-module, .offer-list-wapper');
+      // 1. 优先尝试识别带有 usemap 的核心详情图 (这是 1688 真实详情图的最强特征)
+      const allImgs = Array.from(container.querySelectorAll('img'));
+      const usemapImgs = allImgs.filter(img => img.hasAttribute('usemap'));
+      
+      let targetImgs = allImgs;
+      
+      // 如果发现了带有 usemap 的图片，这些几乎百分之百是我们要的详情图
+      if (usemapImgs.length > 0) {
+        console.log(`[Grab] Found ${usemapImgs.length} images with usemap, prioritizing these.`);
+        targetImgs = usemapImgs;
+      } else {
+        // 兜底策略：寻找位于宽约 790px 容器内的图片 (1688 详情页标准宽度)
+        const contentContainers = Array.from(container.querySelectorAll('div')).filter(div => {
+          const width = div.style.width;
+          return width && (width.includes('790') || width.includes('750'));
+        });
+        
+        if (contentContainers.length > 0) {
+          const imgsInWidthContainer = contentContainers.flatMap(c => Array.from(c.querySelectorAll('img')));
+          if (imgsInWidthContainer.length > 0) {
+            console.log(`[Grab] Found ${imgsInWidthContainer.length} images in 790px/750px width container.`);
+            targetImgs = imgsInWidthContainer;
+          }
+        }
+      }
+
+    const imgs = targetImgs.filter(img => {
+      // 1. 过滤掉已知干扰区域
+      const isRecommendation = img.closest('.sdmap-dynamic-offer-list, .desc-dynamic-module, .offer-list-wapper, .mod-detail-ad, [class*="hot-sale"]');
       if (isRecommendation) {
         const text = isRecommendation.textContent || '';
-        if (text.includes('店铺推荐') || text.includes('更多推荐')) {
+        if (text.includes('店铺推荐') || text.includes('更多推荐') || text.includes('热卖') || text.includes('相关产品')) {
           return false;
         }
       }
 
-      // 2. 过滤掉带有跳转性质的动态备份图 (通常是店铺推荐的另一种形式)
+      // 2. 过滤掉带有跳转性质的动态备份图
       if (img.classList.contains('dynamic-backup-img')) {
         return false;
       }
@@ -583,9 +647,8 @@ const urlToBase64 = async (url: string): Promise<string> => {
 };
 
 const handleGenerateWhiteBg = async () => {
-  isGenerating.value = true;
+  isGeneratingWhiteBg.value = true;
   error.value = '';
-  
   try {
     const response = await browser.runtime.sendMessage({
       type: 'API_REQUEST',
@@ -624,18 +687,32 @@ const handleGenerateWhiteBg = async () => {
     status.value = 'failed';
     error.value = e.message;
   } finally {
-    isGenerating.value = false;
+    isGeneratingWhiteBg.value = false;
   }
 };
 
 const handleConfirmWhiteBg = async () => {
   // 确认后，直接调用 handleGenerate，使用已生成的 whiteBgUrl (服务器路径)
+  // 将状态设为 processing 而不是 completed，避免 UI 直接显示“重新生成”
+  status.value = 'processing';
   handleGenerate(true);
 };
 
 const handleGenerate = async (useWhiteBg = false) => {
   isGenerating.value = true;
+  // 如果是从白底图确认过来的，状态保持 processing，或者切到 completed
+  // 但这里为了避免“正在重新生成”的误解，我们确保 status 是 processing，直到收到结果
+  if (useWhiteBg) {
+    status.value = 'processing';
+  } else {
+    // 正常流程
+    status.value = 'processing'; 
+  }
+  
   error.value = '';
+  resultImages.value = [];
+  resultImagesBase64.value = [];
+  phrases.value = [];
   
   try {
     const body: any = {
@@ -667,14 +744,77 @@ const handleGenerate = async (useWhiteBg = false) => {
     });
 
     if (!response.success) throw new Error(response.error);
-    const { task_id } = response.data;
-    await pollTask(task_id);
+    currentTaskId.value = response.data.task_id;
+    startPolling();
     
   } catch (e: any) {
     status.value = 'failed';
     error.value = e.message;
-  } finally {
     isGenerating.value = false;
+  }
+};
+
+const startPolling = () => {
+  if (pollingTimer.value) clearInterval(pollingTimer.value);
+  
+  pollingTimer.value = setInterval(async () => {
+    try {
+      const response = await browser.runtime.sendMessage({
+        type: 'API_REQUEST',
+        url: `${BACKEND_URL}/api/task/${currentTaskId.value}`,
+        options: { method: 'GET' }
+      });
+      
+      if (!response.success) {
+        stopPolling();
+        error.value = response.error;
+        status.value = 'failed';
+        isGenerating.value = false;
+        return;
+      }
+
+      const data = response.data;
+      
+      // 更新提示词（占位用）
+      if (data.phrases && data.phrases.length > 0) {
+        phrases.value = data.phrases;
+      }
+      
+      // 更新已生成的图片
+      if (data.images && data.images.length > 0) {
+        resultImages.value = data.images;
+      }
+      if (data.images_base64 && data.images_base64.length > 0) {
+        resultImagesBase64.value = data.images_base64;
+      }
+      if (data.product_index) {
+        currentProductIndex.value = data.product_index;
+      }
+      
+      if (data.status === 'completed') {
+        stopPolling();
+        status.value = 'completed';
+        isGenerating.value = false;
+      } else if (data.status === 'failed') {
+        stopPolling();
+        error.value = data.error || '生成失败';
+        status.value = 'failed';
+        isGenerating.value = false;
+      }
+    } catch (e: any) {
+      console.error('Polling error:', e);
+      stopPolling();
+      error.value = e.message;
+      status.value = 'failed';
+      isGenerating.value = false;
+    }
+  }, 2000);
+};
+
+const stopPolling = () => {
+  if (pollingTimer.value) {
+    clearInterval(pollingTimer.value);
+    pollingTimer.value = null;
   }
 };
 
@@ -708,23 +848,6 @@ const pollTaskInternal = async (taskId: string): Promise<{images: string[], whit
       }
     }, 2000);
   });
-};
-
-const pollTask = async (taskId: string) => {
-  try {
-    const result = await pollTaskInternal(taskId);
-    if (result) {
-      resultImages.value = result.images;
-      resultImagesBase64.value = result.images_base64 || [];
-      if (result.product_index) {
-        currentProductIndex.value = result.product_index;
-      }
-      status.value = 'completed';
-    }
-  } catch (e: any) {
-    error.value = e.message;
-    status.value = 'failed';
-  }
 };
 </script>
 
@@ -795,11 +918,29 @@ const pollTask = async (taskId: string) => {
 }
 
 .page-info {
+  background: #f0f5ff;
+  border: 1px solid #adc6ff;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+
+.info-label-top {
+  font-size: 12px;
+  color: #8c8c8c;
+  margin-bottom: 6px;
+}
+
+.info-title {
   font-size: 13px;
-  color: #666;
-  background: #f0f2f5;
-  padding: 8px; 
-  border-radius: 4px;
+  color: #262626;
+  font-weight: 500;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .action-btn {
@@ -888,48 +1029,233 @@ const pollTask = async (taskId: string) => {
 .preview-img-large {
   width: 100%;
   aspect-ratio: 1;
-  object-fit: cover;
-  border-radius: 8px;
-  border: 1px solid #eee;
+  object-fit: contain;
+  background: #fff;
+  display: block;
 }
 
-.info-vertical {
+/* White BG Review Styles */
+.review-container {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.review-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.step-badge {
+  font-size: 11px;
+  background: #e6f7ff;
+  color: #1890ff;
+  padding: 2px 8px;
+  border-radius: 10px;
+  width: fit-content;
+  font-weight: bold;
+}
+
+.step-title-new {
+  font-size: 16px;
+  font-weight: 600;
+  color: #262626;
+  margin: 0;
+}
+
+.compare-box {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.compare-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.img-label {
+  font-size: 12px;
+  color: #8c8c8c;
+  font-weight: 500;
+}
+
+.img-frame {
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fafafa;
+  position: relative;
+}
+
+.highlight-frame {
+  border: 2px solid #1890ff;
+  box-shadow: 0 4px 12px rgba(24, 144, 255, 0.15);
+}
+
+.preview-img-small {
+  width: 100%;
+  height: 120px;
+  object-fit: contain;
+  background: #fff;
+}
+
+.generating-placeholder {
+  width: 100%;
+  aspect-ratio: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: #fff;
+}
+
+.generating-placeholder span {
+  font-size: 13px;
+  color: #1890ff;
+}
+
+.review-actions {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-.input-field, .textarea-field {
-  width: 100%;
-  padding: 10px;
+.confirm-btn {
+  height: 44px;
+  background: #1890ff;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.confirm-btn:hover {
+  background: #40a9ff;
+}
+
+.retry-btn {
+  background: #fff;
+  color: #595959;
   border: 1px solid #d9d9d9;
-  border-radius: 4px;
-  font-size: 14px;
-  transition: border-color 0.2s;
 }
 
-.input-field:focus, .textarea-field:focus {
-  border-color: #1890ff;
-  outline: none;
-}
-
-.textarea-field {
-  min-height: 80px;
-  resize: vertical;
-}
-
-.small-text {
-  font-size: 12px;
-  color: #666;
+.retry-btn:hover {
+  color: #262626;
+  border-color: #8c8c8c;
   background: #fafafa;
 }
 
-.checkbox-label {
+.link-btn-new {
+  background: none;
+  border: none;
+  color: #8c8c8c;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.link-btn-new:hover {
+  color: #595959;
+}
+
+.review-footer {
+  text-align: center;
+}
+
+.info-vertical {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 15px;
+}
+
+.info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.info-label {
+  font-size: 12px;
+  color: #8c8c8c;
+  font-weight: 500;
+  margin-left: 2px;
+}
+
+.input-wrapper {
+  position: relative;
+  width: 100%;
+}
+
+.input-field-new {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #d9d9d9;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #262626;
+  transition: all 0.3s;
+  box-sizing: border-box;
+  background: #fff;
+}
+
+.input-field-new:focus {
+  border-color: #40a9ff;
+  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.1);
+  outline: none;
+}
+
+.textarea-field-new {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #d9d9d9;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #595959;
+  transition: all 0.3s;
+  box-sizing: border-box;
+  resize: vertical;
+  line-height: 1.6;
+  background: #fafafa;
+}
+
+.textarea-field-new:focus {
+  border-color: #40a9ff;
+  background: #fff;
+  outline: none;
+}
+
+.options-group-new {
+  padding: 12px;
+  background: #f6ffed;
+  border: 1px solid #b7eb8f;
+  border-radius: 8px;
+  margin-top: 4px;
+}
+
+.checkbox-label-new {
   display: flex;
   align-items: center;
-  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-text {
   font-size: 13px;
-  color: #444;
+  color: #389e0d;
+  font-weight: 500;
+}
+
+.checkbox-label-new input {
+  margin-right: 8px;
+  width: 16px;
+  height: 16px;
   cursor: pointer;
 }
 
@@ -960,44 +1286,81 @@ const pollTask = async (taskId: string) => {
   overflow: hidden;
 }
 
-.image-loading-overlay {
+.result-info {
+  padding: 8px 12px;
+  background: #f9f9f9;
+  border-bottom: 1px solid #eee;
+  border-radius: 0 0 8px 8px;
+}
+
+.phrase-text {
+  font-size: 12px;
+  color: #666;
+  line-height: 1.4;
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.skeleton-placeholder {
+  width: 100%;
+  height: 100%;
+  background: #eee;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.skeleton-shimmer {
   position: absolute;
   top: 0;
   left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(255,255,255,0.7);
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0,
+    rgba(255, 255, 255, 0.2) 20%,
+    rgba(255, 255, 255, 0.5) 60%,
+    rgba(255, 255, 255, 0)
+  );
+  animation: shimmer 2s infinite;
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.skeleton-text {
+  font-size: 12px;
+  color: #999;
+  z-index: 1;
+}
+
+.generating-hint {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
-  color: #1890ff;
-}
-
-.result-actions {
-  padding: 8px 12px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: #f8f9fa;
-  border-radius: 0 0 4px 4px;
-}
-
-.retry-load-btn {
+  gap: 8px;
+  margin-top: 10px;
   font-size: 12px;
-  color: #ff4d4f;
-  cursor: pointer;
-  text-decoration: underline;
-}
-
-.retry-load-btn:hover {
-  color: #ff7875;
-}
-
-.download-link {
   color: #1890ff;
-  text-decoration: none;
-  font-size: 13px;
+}
+
+.spinner-small {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #e6f7ff;
+  border-top: 2px solid #1890ff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
 }
 
 .loading-overlay-inline {

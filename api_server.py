@@ -4,6 +4,7 @@ import shutil
 import base64
 import json
 import threading
+import time
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Optional
@@ -30,9 +31,13 @@ app.add_middleware(
 )
 
 # Static files for serving generated images
-DATA_OUTPUTS = Path("data/outputs")
+DATA_ROOT = Path("data")
+DATA_OUTPUTS = DATA_ROOT / "outputs"
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
 DATA_OUTPUTS.mkdir(parents=True, exist_ok=True)
+
 app.mount("/outputs", StaticFiles(directory=DATA_OUTPUTS), name="outputs")
+app.mount("/data", StaticFiles(directory=DATA_ROOT), name="data")
 
 # File-based database lock
 db_lock = threading.Lock()
@@ -48,8 +53,8 @@ def get_next_product_index():
                 data = json.load(f)
                 if not data:
                     return 1
-                # 假设数据是列表，每个元素有 index 字段
-                indices = [item.get('index', 0) for item in data]
+                # 过滤掉时间戳风格的异常序号（例如大于 1000000 的）
+                indices = [item.get('index', 0) for item in data if isinstance(item.get('index'), int) and item.get('index', 0) < 1000000]
                 return max(indices) + 1 if indices else 1
         except Exception as e:
             logger.error(f"Error reading products.json: {e}")
@@ -118,13 +123,39 @@ async def generate_scene(request: GenerateRequest, background_tasks: BackgroundT
     # To keep it simple, the extension will send base64 in a real scenario.
     # But let's support image_url for now.
     
-    # Initialize task status
-    tasks_db[task_id] = {"status": "processing", "images": [], "error": None}
+    # Initialize task status with support for progressive loading
+    tasks_db[task_id] = {
+        "status": "processing",
+        "phrases": [],         # Placeholder for scene descriptions
+        "images": [],          # Progressive image URLs
+        "images_base64": [],   # Progressive image Base64
+        "error": None
+    }
     
     # Start the pipeline in background
     background_tasks.add_task(run_pipeline_task, task_id, request)
     
     return GenerateResponse(task_id=task_id, status="processing")
+
+def update_task_progress(task_id: str, phrases: List[str] = None, new_image_url: str = None, new_image_base64: str = None, status: str = None):
+    """
+    Update task status in a thread-safe way for progressive loading.
+    """
+    with db_lock:
+        if task_id not in tasks_db:
+            return
+        
+        if phrases is not None:
+            tasks_db[task_id]["phrases"] = phrases
+            
+        if new_image_url is not None:
+            tasks_db[task_id]["images"].append(new_image_url)
+            
+        if new_image_base64 is not None:
+            tasks_db[task_id]["images_base64"].append(new_image_base64)
+            
+        if status is not None:
+            tasks_db[task_id]["status"] = status
 
 async def run_pipeline_task(task_id: str, request: GenerateRequest):
     try:
@@ -191,20 +222,26 @@ async def run_pipeline_task(task_id: str, request: GenerateRequest):
             task_dir.mkdir(parents=True, exist_ok=True)
             img_path = task_dir / "main.jpg"
 
-        # 2. Save/Load the image
+        # 2. 获取正确的图片路径作为生图源
+        # 遵循设计：如果提供了 image_path（如白底图），则使用它；否则使用默认的 main.jpg
+        active_image_path = img_path
         if request.image_path:
             # Handle server-side path (from previous white-bg step)
-            # Example: /outputs/white_bg_xxx.png
+            # Example: /outputs/xxx.png or /data/序号/white_bg_main.jpg
             rel_path = request.image_path.lstrip('/')
+            
+            src_path = None
             if rel_path.startswith('outputs/'):
                 src_path = DATA_OUTPUTS / rel_path[8:]
-                if src_path.exists():
-                    shutil.copy(src_path, img_path)
-                    logger.info(f"Loaded image from path: {src_path}")
-                else:
-                    raise Exception(f"Image path not found: {src_path}")
+            elif rel_path.startswith('data/'):
+                src_path = DATA_ROOT / rel_path[5:]
+            
+            if src_path and src_path.exists():
+                # 不再执行 shutil.copy(src_path, img_path)，避免覆盖原始 main.jpg
+                active_image_path = src_path
+                logger.info(f"Using provided image source: {active_image_path}")
             else:
-                raise Exception(f"Invalid image path format: {request.image_path}")
+                raise Exception(f"Image path not found or invalid format: {request.image_path}")
         elif request.image_base64:
             # Handle base64
             header, data = request.image_base64.split(',', 1) if ',' in request.image_base64 else (None, request.image_base64)
@@ -224,81 +261,101 @@ async def run_pipeline_task(task_id: str, request: GenerateRequest):
             name=request.name,
             detail=request.detail,
             attributes=request.attributes,
-            sample_dir=str(img_path.parent),
-            image=img_path
+            sample_dir=str(img_path.parent.relative_to(DATA_ROOT)), # 使用相对 DATA_ROOT 的路径
+            image=active_image_path.relative_to(DATA_ROOT) if active_image_path.is_absolute() else active_image_path
         )
         
+        # Define progress callback
+        def on_pipeline_progress(progress_data):
+            # Handle phrases
+            if "phrases" in progress_data:
+                update_task_progress(task_id, phrases=progress_data["phrases"])
+            
+            # Handle single image complete
+            if "new_image" in progress_data:
+                img_path_abs = Path(progress_data["new_image"]).resolve()
+                
+                # Try to resolve relative to DATA_OUTPUTS first
+                try:
+                    rel_path = img_path_abs.relative_to(DATA_OUTPUTS.resolve())
+                    url = f"/outputs/{rel_path.as_posix()}"
+                except ValueError:
+                    # Fallback to DATA_ROOT
+                    try:
+                        rel_path = img_path_abs.relative_to(DATA_ROOT.resolve())
+                        url = f"/data/{rel_path.as_posix()}"
+                    except ValueError:
+                        # Absolute path or outside data root
+                        url = str(img_path_abs)
+                
+                # Get Base64
+                base64_data = ""
+                try:
+                    if img_path_abs.exists():
+                        with open(img_path_abs, "rb") as f:
+                            base64_data = f"data:image/png;base64,{base64.b64encode(f.read()).decode()}"
+                except Exception as e:
+                    logger.error(f"Error encoding progressive image: {e}")
+                
+                update_task_progress(task_id, new_image_url=url, new_image_base64=base64_data)
+
         # Run pipeline
         if request.white_bg_only:
-            # 仅生成白底图
             white_bg_path = await pipeline.run_white_bg_only(product)
-            # 转换为相对于 DATA_ROOT 的路径供前端访问
-            # 注意：white_bg_generator 返回的是绝对路径
-            # 我们需要把生成的白底图也放到静态文件服务目录下
+            white_bg_path_abs = Path(white_bg_path).resolve()
             
-            # 将生成的白底图移动/复制到 outputs 目录下以便访问
-            rel_white_bg = f"white_bg_{task_id}.png"
-            output_white_bg = DATA_OUTPUTS / rel_white_bg
-            shutil.copy(white_bg_path, output_white_bg)
+            # 确保保存到正确的序号目录 (data/序号)
+            product_index = request.product_index if request.product_index is not None else get_next_product_index()
+            task_dir = DATA_ROOT / str(product_index)
+            task_dir.mkdir(parents=True, exist_ok=True)
             
-            # Get Base64 for white background image to avoid CORS/Mixed Content issues
+            # 使用统一的文件名 white_bg_main.jpg
+            output_white_bg = task_dir / "white_bg_main.jpg"
+            
+            # 💡 修复：如果新生成的路径和目标路径相同，或者目标文件已存在，先处理冲突
+            white_bg_path_p = Path(white_bg_path).resolve()
+            output_white_bg_p = output_white_bg.resolve()
+            
+            if white_bg_path_p == output_white_bg_p:
+                logger.info(f"New white bg is already at target: {output_white_bg_p}")
+            else:
+                if output_white_bg_p.exists():
+                    logger.info(f"Removing existing white bg before overwrite: {output_white_bg_p}")
+                    output_white_bg_p.unlink()
+                shutil.copy(white_bg_path, output_white_bg)
+            
+            output_white_bg_abs = output_white_bg.resolve()
+            
+            # 生成 URL (相对于 DATA_ROOT)
+            try:
+                rel_path = output_white_bg_abs.relative_to(DATA_ROOT.resolve())
+                url = f"/data/{rel_path.as_posix()}"
+            except ValueError:
+                url = str(output_white_bg_abs)
+            
             white_bg_base64 = ""
             try:
-                if output_white_bg.exists():
-                    with open(output_white_bg, "rb") as f:
+                if output_white_bg_abs.exists():
+                    with open(output_white_bg_abs, "rb") as f:
                         white_bg_base64 = f"data:image/png;base64,{base64.b64encode(f.read()).decode()}"
             except Exception as e:
                 logger.error(f"Error encoding white_bg to base64: {e}")
 
-            tasks_db[task_id]["status"] = "completed"
-            tasks_db[task_id]["images"] = [f"/outputs/{rel_white_bg}"]
-            tasks_db[task_id]["white_bg_base64"] = white_bg_base64
+            # 清空 images 重新填充，确保前端获取的是最新单张图
+            with db_lock:
+                tasks_db[task_id]["images"] = [url]
+                tasks_db[task_id]["images_base64"] = [white_bg_base64]
+                tasks_db[task_id]["white_bg_base64"] = white_bg_base64 # 兼容旧逻辑
+                tasks_db[task_id]["status"] = "completed"
+                tasks_db[task_id]["product_index"] = product_index
         else:
-            # 运行完整流程（或从已有的白底图开始）
-            result_task = await pipeline.run(product, need_white_bg=request.need_white_bg)
+            # 运行完整流程（支持进度回调）
+            result_task = await pipeline.run(product, need_white_bg=request.need_white_bg, on_progress=on_pipeline_progress)
             
             if result_task.status == TaskStatus.COMPLETED:
-                generated_images = []
-                if result_task.image_result:
-                    for img in result_task.image_result.images:
-                        # Convert absolute path to relative for the static server
-                        rel_path = os.path.relpath(img.image_path, DATA_OUTPUTS)
-                        generated_images.append(f"/outputs/{rel_path.replace(os.sep, '/')}")
-                
-                tasks_db[task_id]["status"] = "completed"
-                tasks_db[task_id]["images"] = generated_images
-                
-                # Proactively return Base64 for all results to ensure they display in HTTPS (Mixed Content bypass)
-                tasks_db[task_id]["images_base64"] = []
-                if result_task.image_result:
-                    for img in result_task.image_result.images:
-                        try:
-                            with open(img.image_path, "rb") as f:
-                                tasks_db[task_id]["images_base64"].append(
-                                    f"data:image/png;base64,{base64.b64encode(f.read()).decode()}"
-                                )
-                        except Exception as e:
-                            logger.error(f"Error encoding image to base64: {e}")
-                            tasks_db[task_id]["images_base64"].append("") # Placeholder for failed encoding
-                
-                # Also try to get white_bg_base64 for the full pipeline if requested
-                if request.need_white_bg:
-                    try:
-                        # The filename is generated by white_bg_generator.py as white_bg_{original_stem}.jpg
-                        white_bg_file = img_path.parent / f"white_bg_{img_path.stem}.jpg"
-                        if white_bg_file.exists():
-                            with open(white_bg_file, "rb") as f:
-                                tasks_db[task_id]["white_bg_base64"] = f"data:image/jpeg;base64,{base64.b64encode(f.read()).decode()}"
-                        else:
-                            # Try legacy fallback
-                            legacy_file = img_path.parent / "white_bg.png"
-                            if legacy_file.exists():
-                                with open(legacy_file, "rb") as f:
-                                    tasks_db[task_id]["white_bg_base64"] = f"data:image/png;base64,{base64.b64encode(f.read()).decode()}"
-                    except Exception as e:
-                        logger.error(f"Error encoding full-pipeline white_bg to base64: {e}")
+                update_task_progress(task_id, status="completed")
             else:
-                tasks_db[task_id]["status"] = "failed"
+                update_task_progress(task_id, status="failed")
                 tasks_db[task_id]["error"] = result_task.error
             
     except Exception as e:

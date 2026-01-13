@@ -51,7 +51,7 @@ class ProductImagePipeline:
         new_image_path = await self.white_bg_generator.process(product.image)
         return new_image_path
 
-    async def run(self, product: ProductInput, need_white_bg: bool = False) -> GenerationTask:
+    async def run(self, product: ProductInput, need_white_bg: bool = False, on_progress: callable = None) -> GenerationTask:
         start_time = time.time()
         task_id = str(uuid.uuid4())
         task = GenerationTask(task_id=task_id, product=product, status=TaskStatus.PROCESSING)
@@ -63,16 +63,18 @@ class ProductImagePipeline:
         # 如果需要生成白底图，先执行 Step 0
         if need_white_bg:
             s0_start = time.time()
-            logger.info("Step 0: Generating white background (Gemini)...")
+            logger.info("--- [Step 0: White Background Generation] ---")
+            logger.info(f"Source Image for White BG: {product.image}")
             try:
                 new_image_path = await self.white_bg_generator.process(product.image)
                 product.image = new_image_path
-                logger.info(f"✅ Step 0 Completed in {time.time() - s0_start:.2f}s. New image: {product.image}")
+                logger.info(f"✅ Step 0 Completed. Generated White BG: {product.image}")
             except Exception as e:
                 logger.error(f"❌ Step 0 Failed: {e}")
-                # 即使失败也继续，或者抛出异常取决于需求
-                # 这里我们选择抛出异常，因为后续流程依赖白底图
                 raise e
+        else:
+            logger.info("--- [Step 0: Skipped (User chose not to generate white BG)] ---")
+            logger.info(f"Using existing image as reference: {product.image}")
         
         folder_name = (
             f"{product_id}_"
@@ -115,6 +117,11 @@ class ProductImagePipeline:
             self._save_intermediate(task_dir, f"03_phrase_generator_{self.phrase_generator.model_name}_{self.phrase_generator.prompt_type}", task.phrase_result)
             logger.info(f"✅ Step 3 Completed in {time.time() - s3_start:.2f}s. Generated {len(task.phrase_result.phrases)} phrases.")
             
+            # 💡 进度回调：通知提示词已生成，前端可以开始“占坑”
+            if on_progress and task.phrase_result:
+                phrases = [p.scene_description for p in task.phrase_result.phrases]
+                on_progress({"phrases": phrases})
+            
             # 4. Image Generator (Multi-provider)
             s4_start = time.time()
             logger.info(f"Step 4: Generating images with {self.image_generator.provider.provider_name}...")
@@ -130,7 +137,13 @@ class ProductImagePipeline:
                 "image_model": self.image_generator.provider.model_name
             }
             
-            task.image_result = await self.image_generator.process(product, task.phrase_result, task_dir, metadata=metadata)
+            task.image_result = await self.image_generator.process(
+                product, 
+                task.phrase_result, 
+                task_dir, 
+                metadata=metadata,
+                on_image_complete=lambda img_path: on_progress({"new_image": img_path}) if on_progress else None
+            )
             logger.info(f"✅ Step 4 Completed in {time.time() - s4_start:.2f}s. Saved {len(task.image_result.images)} images.")
             
             task.status = TaskStatus.COMPLETED
