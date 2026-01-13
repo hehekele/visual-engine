@@ -12,24 +12,32 @@ class ImageGenerator:
     图像生成处理器，负责调用具体的提供商生成图片。
     """
     def __init__(self):
-        # 通过工厂创建具体的图像提供商
-        self.provider = ImageProviderFactory.create()
-        logger.info(f"Initialized ImageGenerator with provider: {self.provider.__class__.__name__}")
+        # 优先使用分项配置，如果没有则回退到默认生图配置
+        provider_name = settings.SCENE_GEN_PROVIDER or settings.IMAGE_PROVIDER
+        model_name = settings.SCENE_GEN_MODEL
+        
+        self.provider = ImageProviderFactory.create(
+            provider_name=provider_name,
+            model_name=model_name
+        )
+        logger.info(f"Initialized ImageGenerator with provider: {self.provider.provider_name}, model: {self.provider.model_name}")
 
     async def process(self, product: ProductInput, phrase_result: PhraseResult, output_dir: Path, metadata: dict = None) -> ImageGenerationResult:
         logger.info(f"Starting image generation for product: {product.name}")
         
         # 1. 使用指定的 image 路径作为原始商品图片
         original_image = None
-        if product.image.exists():
+        image_path = Path(product.image) if isinstance(product.image, str) else product.image
+        
+        if image_path.exists():
             try:
-                original_image = PIL.Image.open(product.image)
-                logger.debug(f"Using original image: {product.image}")
+                original_image = PIL.Image.open(image_path)
+                logger.debug(f"Using original image: {image_path}")
             except Exception as e:
-                logger.error(f"Failed to open image {product.image}: {e}")
+                logger.error(f"Failed to open image {image_path}: {e}")
         
         if not original_image:
-            raise Exception(f"No valid original image found for product {product.name} at {product.image}")
+            raise Exception(f"No valid original image found for product {product.name} at {image_path}")
 
         # 2. 确保输出目录存在
         output_dir.mkdir(parents=True, exist_ok=True)

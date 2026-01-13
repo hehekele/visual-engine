@@ -38,6 +38,7 @@ class SceneRefiner:
             ### 商品信息
             - 名称：{product.name}
             - 描述：{product.detail or ""}
+            - 规格参数：{product.attributes or ""}
 
             ### 输入 JSON 数据
             以下是需要优化和泛化的原始 JSON 数据，请基于此进行操作：

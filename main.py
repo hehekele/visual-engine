@@ -1,15 +1,22 @@
 import asyncio
 import json
 from app.core.logging import logger, setup_logging
-from app.services.data_loader import ExcelDataLoader
+from app.services.data_loader import ExcelDataLoader, JSONDataLoader
 from app.services.pipeline import ProductImagePipeline
+from app.core.config import settings
 
 async def main():
     setup_logging()
     logger.info("Initializing Visual Engine Pipeline")
     
     # 1. Load Data
-    loader = ExcelDataLoader()
+    if settings.full_products_json_path.exists():
+        logger.info("Using JSON data loader")
+        loader = JSONDataLoader()
+    else:
+        logger.info("Using Excel data loader")
+        loader = ExcelDataLoader()
+    
     products = loader.load_products()
     
     if not products:

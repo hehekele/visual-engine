@@ -13,13 +13,13 @@ class DeerApiProvider(BaseImageProvider):
     根据文档：https://apidoc.deerapi.com/guide-to-calling-gemini-image
     注意：DeerAPI 在 Gemini 协议中使用 snake_case 命名 (inline_data, mime_type)。
     """
-    def __init__(self):
+    def __init__(self, model_name: str = None):
         super().__init__()
         self.provider_name = "deerapi"
         self.api_key = settings.DEERAPI_API_KEY or settings.GEMINI_API_KEY
         self.base_url = settings.DEERAPI_BASE_URL.rstrip('/')
-        # 默认使用 gemini-2.5-flash-image
-        self.model_name = settings.DEERAPI_MODEL
+        # 优先使用传入的模型名，否则从配置中读取
+        self.model_name = model_name or settings.DEERAPI_MODEL
 
     async def generate_image(self, prompt: str, original_image: Image.Image, output_path: Path) -> bool:
         # 将 PIL 图片转换为 base64
@@ -42,19 +42,19 @@ class DeerApiProvider(BaseImageProvider):
                     "role": "user",
                     "parts": [
                         {
-                            "text": prompt
-                        },
-                        {
                             "inline_data": {
                                 "mime_type": "image/png",
                                 "data": img_base64
                             }
+                        },
+                        {
+                            "text": prompt
                         }
                     ]
                 }
             ],
             "generationConfig": {
-                "responseModalities": ["TEXT", "IMAGE"]
+                "responseModalities": ["IMAGE"]
             }
         }
 

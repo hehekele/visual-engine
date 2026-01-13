@@ -11,13 +11,13 @@ class GrsaiProvider(BaseImageProvider):
     """
     Grsai 提供商实现，支持 Gemini 官方接口格式，模型名为 nano-banana-fast。
     """
-    def __init__(self):
+    def __init__(self, model_name: str = None):
         super().__init__()
         self.provider_name = "grsai"
         self.api_key = settings.GRSAI_API_KEY or settings.GEMINI_API_KEY
         self.base_url = settings.GRSAI_BASE_URL.rstrip('/')
-        # 从配置中读取模型名称
-        self.model_name = settings.GRSAI_MODEL
+        # 优先使用传入的模型名，否则从配置中读取
+        self.model_name = model_name or settings.GRSAI_MODEL
 
     async def generate_image(self, prompt: str, original_image: Image.Image, output_path: Path) -> bool:
         # 将 PIL 图片转换为 base64

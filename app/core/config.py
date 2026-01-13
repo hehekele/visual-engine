@@ -10,6 +10,12 @@ class Settings(BaseSettings):
     # 图像生成配置
     IMAGE_PROVIDER: str = "gemini"  # gemini, 147api, grsai, deerapi
     
+    # 分项生图配置 (可选，如果不设置则回退到 IMAGE_PROVIDER)
+    WHITE_BG_PROVIDER: Optional[str] = None
+    WHITE_BG_MODEL: Optional[str] = None
+    SCENE_GEN_PROVIDER: Optional[str] = None
+    SCENE_GEN_MODEL: Optional[str] = None
+    
     # Grsai 配置
     GRSAI_API_KEY: Optional[str] = None
     GRSAI_BASE_URL: str = "https://grsai.dakka.com.cn"
@@ -37,6 +43,7 @@ class Settings(BaseSettings):
     # 路径配置
     DATA_ROOT: Path = Path("./data")
     EXCEL_PATH: str = "products.xlsx"
+    PRODUCTS_JSON_PATH: str = "products.json"
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -47,5 +54,9 @@ class Settings(BaseSettings):
     @property
     def full_excel_path(self) -> Path:
         return self.DATA_ROOT / self.EXCEL_PATH
+
+    @property
+    def full_products_json_path(self) -> Path:
+        return self.DATA_ROOT / self.PRODUCTS_JSON_PATH
 
 settings = Settings()

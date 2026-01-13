@@ -13,13 +13,13 @@ class Api147Provider(BaseImageProvider):
     """
     147api 提供商实现，支持 Nano-banana 比例配置。
     """
-    def __init__(self):
+    def __init__(self, model_name: str = None):
         super().__init__()
         self.provider_name = "147api"
         self.api_key = settings.API147_API_KEY or settings.GEMINI_API_KEY
         self.base_url = settings.API147_BASE_URL.rstrip('/')
-        # 从配置中读取模型名称
-        self.model_name = settings.API147_MODEL
+        # 优先使用传入的模型名，否则从配置中读取
+        self.model_name = model_name or settings.API147_MODEL
 
     async def generate_image(self, prompt: str, original_image: Image.Image, output_path: Path) -> bool:
         # 将 PIL 图片转换为 base64
@@ -41,19 +41,19 @@ class Api147Provider(BaseImageProvider):
                     "role": "user",
                     "parts": [
                         {
-                            "text": prompt
-                        },
-                        {
                             "inlineData": {
                                 "mimeType": "image/png",
                                 "data": img_base64
                             }
+                        },
+                        {
+                            "text": prompt
                         }
                     ]
                 }
             ],
             "generationConfig": {
-                "responseModalities": ["TEXT", "IMAGE"]
+                "responseModalities": ["IMAGE"]
             }
         }
 

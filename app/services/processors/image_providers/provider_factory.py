@@ -18,11 +18,12 @@ class ImageProviderFactory:
     }
 
     @classmethod
-    def create(cls, provider_name: str = None) -> BaseImageProvider:
+    def create(cls, provider_name: str = None, model_name: str = None) -> BaseImageProvider:
         """
         创建一个提供商实例。
         
         :param provider_name: 提供商名称（如 gemini, grsai, 147api, deerapi）
+        :param model_name: 模型名称 (可选)
         :return: BaseImageProvider 的实例
         """
         # 优先从参数获取，否则从 settings 获取
@@ -32,4 +33,4 @@ class ImageProviderFactory:
         if not provider_cls:
             raise ValueError(f"Unknown image provider: {name}. Available: {list(cls._providers.keys())}")
         
-        return provider_cls()
+        return provider_cls(model_name=model_name)

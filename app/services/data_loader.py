@@ -1,9 +1,51 @@
 import pandas as pd
+import json
 from pathlib import Path
 from typing import List
 from loguru import logger
 from app.schemas import ProductInput
 from app.core.config import settings
+
+class JSONDataLoader:
+    def __init__(self):
+        self.json_path = settings.full_products_json_path
+        self.data_root = settings.DATA_ROOT
+
+    def load_products(self) -> List[ProductInput]:
+        logger.info(f"Loading products from {self.json_path}")
+        
+        if not self.json_path.exists():
+            logger.error(f"JSON file not found: {self.json_path}")
+            return []
+
+        try:
+            with open(self.json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            products = []
+            for item in data:
+                sample_dir = str(item.get("index", ""))
+                name = item.get("name", "")
+                detail = item.get("detail", "")
+                image_relative_path = item.get("image", "")
+                
+                image_path = Path(image_relative_path)
+                if not image_path.is_absolute():
+                    image_path = self.data_root / image_path
+                
+                product = ProductInput(
+                    sample_dir=sample_dir,
+                    name=name,
+                    detail=detail,
+                    image=image_path
+                )
+                products.append(product)
+                
+            logger.info(f"Successfully loaded {len(products)} products")
+            return products
+        except Exception as e:
+            logger.exception(f"Error loading JSON file: {e}")
+            return []
 
 class ExcelDataLoader:
     def __init__(self):

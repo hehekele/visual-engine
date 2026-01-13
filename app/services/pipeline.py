@@ -10,6 +10,7 @@ from app.services.processors.scene_summarizer import SceneSummarizer
 from app.services.processors.scene_refiner import SceneRefiner
 from app.services.processors.phrase_generator import PhraseGenerator
 from app.services.processors.image_generator import ImageGenerator
+from app.services.processors.white_bg_generator import WhiteBGGenerator
 
 class ProductImagePipeline:
     def __init__(self):
@@ -17,6 +18,7 @@ class ProductImagePipeline:
         self.refiner = SceneRefiner()
         self.phrase_generator = PhraseGenerator()
         self.image_generator = ImageGenerator()
+        self.white_bg_generator = WhiteBGGenerator()
 
     def _save_intermediate(self, task_dir: Path, step_name: str, data: any):
         """
@@ -41,7 +43,15 @@ class ProductImagePipeline:
         except Exception as e:
             logger.error(f"Failed to save intermediate result: {e}")
 
-    async def run(self, product: ProductInput) -> GenerationTask:
+    async def run_white_bg_only(self, product: ProductInput) -> Path:
+        """
+        仅执行白底图生成步骤并返回生成的图片路径。
+        """
+        logger.info("Pipeline: Generating white background only...")
+        new_image_path = await self.white_bg_generator.process(product.image)
+        return new_image_path
+
+    async def run(self, product: ProductInput, need_white_bg: bool = False) -> GenerationTask:
         start_time = time.time()
         task_id = str(uuid.uuid4())
         task = GenerationTask(task_id=task_id, product=product, status=TaskStatus.PROCESSING)
@@ -49,6 +59,20 @@ class ProductImagePipeline:
         # 0. 预先构建任务输出目录名
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         product_id = Path(product.sample_dir).name
+        
+        # 如果需要生成白底图，先执行 Step 0
+        if need_white_bg:
+            s0_start = time.time()
+            logger.info("Step 0: Generating white background (Gemini)...")
+            try:
+                new_image_path = await self.white_bg_generator.process(product.image)
+                product.image = new_image_path
+                logger.info(f"✅ Step 0 Completed in {time.time() - s0_start:.2f}s. New image: {product.image}")
+            except Exception as e:
+                logger.error(f"❌ Step 0 Failed: {e}")
+                # 即使失败也继续，或者抛出异常取决于需求
+                # 这里我们选择抛出异常，因为后续流程依赖白底图
+                raise e
         
         folder_name = (
             f"{product_id}_"

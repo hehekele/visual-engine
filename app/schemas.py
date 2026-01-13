@@ -13,6 +13,7 @@ class ProductInput(BaseModel):
     sample_dir: str
     name: str
     detail: Optional[str] = None
+    attributes: Optional[str] = "" # 商品规格参数
     image: Path
 
 class SceneItem(BaseModel):
