@@ -152,6 +152,7 @@ cython_debug/
 .vscode/
 
 # Project Specific Data
+tests/
 src/
 data/outputs/
 data/samples/
