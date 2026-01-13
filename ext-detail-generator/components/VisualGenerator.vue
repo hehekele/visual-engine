@@ -42,6 +42,25 @@
               <img :src="productData.image" class="preview-img-large" />
             </div>
 
+            <!-- Detail Images Viewer -->
+            <div class="gallery-selector mt-10">
+              <p class="section-title">抓取到的详情图 ({{ productData.detail_images.length }}张)</p>
+              <div v-if="productData.detail_images.length > 0" class="gallery-scroll">
+                <div 
+                  v-for="(img, idx) in productData.detail_images" 
+                  :key="idx" 
+                  class="gallery-item"
+                  @click="selectMainImage(img)"
+                >
+                  <img :src="img" />
+                </div>
+              </div>
+              <div v-else class="no-data-hint">
+                未检测到详情图，请尝试手动向下滚动商品详情区域后再抓取
+              </div>
+              <p class="hint-text" v-if="productData.detail_images.length > 0">点击图片可将其设为主图</p>
+            </div>
+
             <div class="info-vertical">
               <input v-model="productData.name" placeholder="商品名称" class="input-field" />
               <textarea v-model="productData.detail" placeholder="简要描述" class="textarea-field"></textarea>
@@ -78,7 +97,7 @@
                 <img :src="whiteBgBase64 || getFullUrl(whiteBgUrl)" class="preview-img-large highlight" />
               </div>
             </div>
-            <div class="review-actions">
+            <div class="review-actions" v-if="!isGenerating">
               <button @click="handleConfirmWhiteBg" class="action-btn confirm-btn">确认，生成场景图</button>
               <button @click="handleGenerateWhiteBg" :disabled="isGenerating" class="action-btn retry-btn">
                 {{ isGenerating ? '重新生成中...' : '不合格，重新生成' }}
@@ -97,9 +116,19 @@
           
           <div v-if="status === 'completed'" class="results-list">
             <div v-for="(img, index) in resultImages" :key="index" class="result-item-vertical">
-              <img :src="resultImagesBase64[index] || getFullUrl(img)" class="result-img-full" />
+              <div class="image-wrapper">
+                <img 
+                  :src="resultImagesBase64[index] || getFullUrl(img)" 
+                  class="result-img-full" 
+                  @error="handleImageError($event, index)"
+                />
+                <div class="image-loading-overlay" v-if="loadingImages[index]">
+                  <span>加载中...</span>
+                </div>
+              </div>
               <div class="result-actions">
                 <a :href="getFullUrl(img)" target="_blank" class="download-link">查看原图</a>
+                <span class="retry-load-btn" @click="reloadImage(index)">加载失败? 刷新</span>
               </div>
             </div>
           </div>
@@ -129,6 +158,39 @@ const error = ref('');
 const resultImages = ref<string[]>([]);
 const resultImagesBase64 = ref<string[]>([]);
 const currentProductIndex = ref<number | null>(null);
+const loadingImages = ref<boolean[]>([]);
+
+// 图片加载错误处理
+const handleImageError = (event: Event, index: number) => {
+  const target = event.target as HTMLImageElement;
+  console.warn(`[Visual Generator] Image load failed for index ${index}: ${target.src}`);
+  // 如果 URL 加载失败，且有 Base64，尝试强制切回 Base64
+  if (resultImagesBase64.value[index] && target.src !== resultImagesBase64.value[index]) {
+    target.src = resultImagesBase64.value[index];
+  }
+};
+
+// 手动刷新图片
+const reloadImage = (index: number) => {
+  const imgUrl = resultImages.value[index];
+  if (!imgUrl) return;
+  
+  loadingImages.value[index] = true;
+  const fullUrl = getFullUrl(imgUrl);
+  
+  // 添加随机参数强制绕过浏览器缓存
+  const separator = fullUrl.includes('?') ? '&' : '?';
+  const timestampedUrl = `${fullUrl}${separator}t=${Date.now()}`;
+  
+  // 查找对应的图片元素并更新
+  const images = document.querySelectorAll('.result-img-full');
+  if (images[index]) {
+    (images[index] as HTMLImageElement).src = timestampedUrl;
+    setTimeout(() => {
+      loadingImages.value[index] = false;
+    }, 1000);
+  }
+};
 const pageType = ref('未知页面');
 
 const productData = ref({
@@ -169,6 +231,70 @@ const grabProductInfo = async () => {
                 document.querySelector('.od-title h1')?.textContent?.trim() || 
                 document.title;
   
+  // 在抓取之前，先模拟滚动以触发 1688 的延迟加载和 Shadow DOM 渲染
+  // 改进：采用分段式滚动，确保页面内容有时间加载
+  const performSmoothScroll = async () => {
+    const scrollStep = 800;
+    const totalScroll = 4000; // 1688 详情页通常比较长
+    const originalScrollPos = window.scrollY;
+
+    for (let current = 0; current < totalScroll; current += scrollStep) {
+      window.scrollBy(0, scrollStep);
+      await new Promise(resolve => setTimeout(resolve, 150)); // 短暂等待加载
+    }
+    
+    // 等待最后一段内容渲染
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // 滚回原来的位置或顶部
+    window.scrollTo(0, originalScrollPos);
+  };
+
+  await performSmoothScroll();
+
+  const findDetailHost = () => {
+    // 策略一：类名定位 (最稳定)
+    let host = document.querySelector('.html-description');
+    if (host) return host;
+
+    // 策略二：标签前缀匹配 (DOM 中 tagName 通常是大写)
+    const allElements = document.getElementsByTagName('*');
+    for (let i = 0; i < allElements.length; i++) {
+      if (allElements[i].tagName.toUpperCase().startsWith('V-DETAIL-')) {
+        return allElements[i];
+      }
+    }
+    return null;
+  };
+
+  const detailHost = findDetailHost();
+
+  // 辅助函数：清洗 URL 获取高清图
+  const cleanImageUrl = (url: string): string => {
+    if (!url) return '';
+    let cleaned = url.trim();
+    if (cleaned.startsWith('//')) cleaned = 'https:' + cleaned;
+    
+    // 1. 处理 1688 常见的缩略图后缀 (如 .60x60.jpg, .400x400.jpg 等)
+    cleaned = cleaned.replace(/\.\d+x\d+.*\.jpg$/, '.jpg');
+    
+    // 2. 处理您提到的 _b.jpg 后缀
+    cleaned = cleaned.replace(/_b\.jpg$/, '.jpg');
+    
+    // 3. 处理 .webp 后缀
+    // 1688 的 webp 通常是 .jpg_.webp 这种形式，直接替换为 .jpg
+    if (cleaned.includes('.jpg_.webp')) {
+      cleaned = cleaned.replace(/\.jpg_\.webp$/, '.jpg');
+    } else if (cleaned.endsWith('.webp')) {
+      cleaned = cleaned.replace(/\.webp$/, '.jpg');
+    }
+
+    // 4. 再次检查是否因为替换产生了重复后缀 (例如 .jpg.jpg)
+    cleaned = cleaned.replace(/\.jpg\.jpg$/, '.jpg');
+    
+    return cleaned;
+  };
+
   // 2. 抓取橱窗图 (Gallery Images) - 对应 //*[@id="gallery"]/div/div[1]/div/div
   let galleryUrls: string[] = [];
   const galleryContainer = document.querySelector('#gallery');
@@ -189,17 +315,9 @@ const grabProductInfo = async () => {
                   img.getAttribute('original-src') || 
                   img.getAttribute('src') || 
                   img.src;
-      if (!src) return '';
       
-      let url = src.trim();
-      if (url.startsWith('//')) url = 'https:' + url;
-      
-      // 过滤掉明显的视频占位图（通常包含特定关键字）
-      if (url.includes('video_play') || url.includes('v-play')) return '';
-
-      // 1688 缩略图通常带有 .60x60.jpg 等后缀，去掉后缀获取大图
-      return url.replace(/\.\d+x\d+.*\.jpg$/, '.jpg');
-    }).filter(url => url && url.startsWith('http') && !url.includes('spacer.gif'));
+      return cleanImageUrl(src);
+    }).filter(url => url && url.startsWith('http') && !url.includes('spacer.gif') && !url.includes('video_play') && !url.includes('v-play'));
     
     // 如果上面的项级过滤没抓到（可能是结构不同），回退到直接抓取图片并过滤
     if (galleryUrls.length === 0) {
@@ -215,12 +333,9 @@ const grabProductInfo = async () => {
                     img.getAttribute('original-src') || 
                     img.getAttribute('src') || 
                     img.src;
-        if (!src) return '';
-        let url = src.trim();
-        if (url.startsWith('//')) url = 'https:' + url;
-        if (url.includes('video_play') || url.includes('v-play')) return '';
-        return url.replace(/\.\d+x\d+.*\.jpg$/, '.jpg');
-      }).filter(url => url && url.startsWith('http') && !url.includes('spacer.gif'));
+        
+        return cleanImageUrl(src);
+      }).filter(url => url && url.startsWith('http') && !url.includes('spacer.gif') && !url.includes('video_play') && !url.includes('v-play'));
     }
 
     // 去重
@@ -330,24 +445,87 @@ const grabProductInfo = async () => {
     window.scrollBy(0, -500); // 滚回去
   }
 
-  // 4. 详情图 (Detail Images) - 对应 //*[@id="detail"]
+  // 4. 详情图 (Detail Images) - 处理 Shadow DOM 和 Lazy Loading
   let detailImgUrls: string[] = [];
+  
+  const getDetailImagesFromContainer = (container: Element | ShadowRoot) => {
+    const imgs = Array.from(container.querySelectorAll('img')).filter(img => {
+      // 1. 过滤掉“店铺推荐”区域的图片
+      const isRecommendation = img.closest('.sdmap-dynamic-offer-list, .desc-dynamic-module, .offer-list-wapper');
+      if (isRecommendation) {
+        const text = isRecommendation.textContent || '';
+        if (text.includes('店铺推荐') || text.includes('更多推荐')) {
+          return false;
+        }
+      }
+
+      // 2. 过滤掉带有跳转性质的动态备份图 (通常是店铺推荐的另一种形式)
+      if (img.classList.contains('dynamic-backup-img')) {
+        return false;
+      }
+      
+      // 3. 过滤掉 title 中包含“跳转到对应的商品页面”的图片
+      const title = img.getAttribute('title') || '';
+      if (title.includes('跳转到对应的商品页面')) {
+        return false;
+      }
+
+      return true;
+    });
+    return imgs.map(img => {
+      // 1. 优先读取 src，因为在 Shadow DOM 中渲染后 src 通常已填充
+      let src = img.getAttribute('src') || (img as HTMLImageElement).src;
+      
+      // 2. 如果 src 是占位图或为空，再尝试各种延迟加载属性
+      if (!src || src.includes('spacer.gif') || src.includes('pixel.gif') || src === location.href) {
+        src = img.getAttribute('data-lazyload-src') || 
+              img.getAttribute('data-lazy-src') ||
+              img.getAttribute('original-src') || 
+              img.getAttribute('data-original') ||
+              img.getAttribute('data-src');
+      }
+      
+      // 3. 兜底方案：扫描所有属性
+      if (!src || src === '') {
+        for (const attr of Array.from(img.attributes)) {
+          const val = attr.value;
+          if (val && (val.startsWith('http') || val.startsWith('//')) && 
+              (val.includes('.jpg') || val.includes('.png') || val.includes('.webp'))) {
+            src = val;
+            break;
+          }
+        }
+      }
+
+      return cleanImageUrl(src);
+    }).filter(url => url && url.startsWith('http') && !url.includes('spacer.gif') && !url.includes('pixel.gif'));
+  };
+
+  // 尝试从主文档找
   const detailContainer = document.querySelector('#detail');
   if (detailContainer) {
-    const imgs = Array.from(detailContainer.querySelectorAll('img'));
-    detailImgUrls = imgs.map(img => {
-      const src = img.getAttribute('data-lazyload-src') || 
-                  img.getAttribute('original-src') || 
-                  img.getAttribute('data-original') ||
-                  img.getAttribute('src') || 
-                  img.src;
-      if (!src) return '';
-      let url = src.trim();
-      if (url.startsWith('//')) url = 'https:' + url;
-      if (url.includes('spacer.gif') || url.includes('pixel.gif')) return '';
-      return url;
-    }).filter(url => url && url.startsWith('http')).slice(0, 20);
+    detailImgUrls = getDetailImagesFromContainer(detailContainer);
   }
+
+  // 如果没找到，或者找到的太少，尝试穿透动态标签名的 Shadow DOM
+  if (detailImgUrls.length < 3) {
+    console.log('Searching for images in dynamic Shadow DOM components...');
+    
+    // 使用之前找到的 detailHost
+    if (detailHost && detailHost.shadowRoot) {
+      console.log(`Found shadowRoot on ${detailHost.tagName}, exploring content...`);
+      // 必须穿透 Shadow DOM
+      const shadowDetail = detailHost.shadowRoot.querySelector('#detail') || detailHost.shadowRoot;
+      const shadowImgs = getDetailImagesFromContainer(shadowDetail);
+      console.log(`Found ${shadowImgs.length} images in Shadow DOM`);
+      // 合并并去重
+      detailImgUrls = [...new Set([...detailImgUrls, ...shadowImgs])];
+    } else {
+      console.log('No suitable shadowRoot container found');
+    }
+  }
+
+  detailImgUrls = detailImgUrls.slice(0, 20);
 
   // 默认选中第一张橱窗图作为主图
   const initialMainImage = galleryUrls.length > 0 ? galleryUrls[0] : '';
@@ -556,7 +734,7 @@ const pollTask = async (taskId: string) => {
   right: 0;
   top: 0;
   height: 100vh;
-  width: 320px;
+  width: 450px;
   background: white;
   box-shadow: -2px 0 12px rgba(0,0,0,0.1);
   z-index: 999999;
@@ -567,7 +745,7 @@ const pollTask = async (taskId: string) => {
 }
 
 .visual-generator-sidebar.collapsed {
-  transform: translateX(320px);
+  transform: translateX(450px);
 }
 
 .sidebar-toggle {
@@ -667,10 +845,13 @@ const pollTask = async (taskId: string) => {
 }
 
 .gallery-scroll {
-  display: flex;
+  display: grid;
+  grid-template-rows: repeat(2, 80px);
+  grid-auto-flow: column;
+  grid-auto-columns: 80px;
   gap: 8px;
   overflow-x: auto;
-  padding-bottom: 4px;
+  padding-bottom: 8px;
 }
 
 .gallery-scroll::-webkit-scrollbar {
@@ -683,13 +864,14 @@ const pollTask = async (taskId: string) => {
 }
 
 .gallery-item {
-  flex: 0 0 60px;
-  height: 60px;
+  width: 80px;
+  height: 80px;
   border-radius: 4px;
   border: 2px solid transparent;
   overflow: hidden;
   cursor: pointer;
   transition: all 0.2s;
+  box-sizing: border-box;
 }
 
 .gallery-item img {
@@ -766,18 +948,56 @@ const pollTask = async (taskId: string) => {
 .result-img-full {
   width: 100%;
   display: block;
+  border-radius: 4px;
+}
+
+.image-wrapper {
+  position: relative;
+  width: 100%;
+  min-height: 200px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.image-loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255,255,255,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: #1890ff;
 }
 
 .result-actions {
-  padding: 8px;
-  background: #fafafa;
-  text-align: center;
+  padding: 8px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #f8f9fa;
+  border-radius: 0 0 4px 4px;
+}
+
+.retry-load-btn {
+  font-size: 12px;
+  color: #ff4d4f;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.retry-load-btn:hover {
+  color: #ff7875;
 }
 
 .download-link {
-  font-size: 13px;
   color: #1890ff;
   text-decoration: none;
+  font-size: 13px;
 }
 
 .loading-overlay-inline {
@@ -874,6 +1094,22 @@ const pollTask = async (taskId: string) => {
 
 .retry-btn:hover {
   background: #ffc53d;
+}
+
+.no-data-hint {
+  font-size: 12px;
+  color: #ff4d4f;
+  padding: 10px;
+  background: #fff2f0;
+  border: 1px border #ffccc7;
+  border-radius: 4px;
+  margin: 5px 0;
+}
+
+.hint-text {
+  font-size: 11px;
+  color: #999;
+  margin-top: 4px;
 }
 
 .mt-10 {

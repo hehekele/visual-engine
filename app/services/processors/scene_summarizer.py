@@ -36,7 +36,6 @@ class SceneSummarizer:
     async def process(self, product: ProductInput) -> SceneSummary:
         logger.info(f"Summarizing product: {product.name} (Dir: {product.sample_dir})")
         
-        # Collect images from the folder
         image_contents = []
         valid_extensions = {".jpg", ".jpeg", ".png", ".webp"}
         
@@ -47,7 +46,6 @@ class SceneSummarizer:
         
         # 兼容性处理：如果路径中包含了多余的 data/ 前缀
         if not sample_path.exists() and "data" in sample_path.parts:
-            # 尝试去掉重复的 data 目录
             parts = list(sample_path.parts)
             if parts.count("data") > 1:
                 new_parts = []
@@ -61,24 +59,49 @@ class SceneSummarizer:
                         new_parts.append(p)
                 sample_path = Path(*new_parts)
 
-        if sample_path.exists() and sample_path.is_dir():
-            files = sorted(os.listdir(sample_path))
-            for filename in files:
+        # 1. 加载主参考图 (优先级：white_bg_main > main)
+        # 注意：这里只选一张最合适的作为主参考
+        primary_candidates = [
+            "white_bg_main.jpg", "white_bg_main.png", 
+            "white_bg.jpg", "white_bg.png", 
+            "main.jpg", "main.png"
+        ]
+        
+        for candidate in primary_candidates:
+            img_path = sample_path / candidate
+            if img_path.exists():
+                base64_img = self.encode_image(img_path)
+                if base64_img:
+                    image_contents.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}
+                    })
+                    logger.info(f"Loaded primary reference image: {candidate}")
+                    break
+        
+        # 2. 加载 detail 目录下的详情图 (不再使用 sub_images)
+        detail_images_path = sample_path / "detail"
+        if detail_images_path.exists() and detail_images_path.is_dir():
+            detail_files = sorted(os.listdir(detail_images_path))
+            detail_count = 0
+            for filename in detail_files:
                 ext = os.path.splitext(filename)[1].lower()
                 if ext in valid_extensions:
-                    img_path = sample_path / filename
+                    img_path = detail_images_path / filename
                     base64_img = self.encode_image(img_path)
                     if base64_img:
                         image_contents.append({
                             "type": "image_url",
                             "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}
                         })
-                        logger.debug(f"Loaded and resized {filename}")
-        
+                        detail_count += 1
+            if detail_count > 0:
+                logger.info(f"Loaded {detail_count} detail images from detail/")
+
         if not image_contents:
             logger.warning(f"No valid images found for product {product.name} at {sample_path}")
         else:
-            logger.info(f"Loaded {len(image_contents)} images for analysis.")
+            logger.info(f"Loaded total {len(image_contents)} images for analysis.")
 
         prompt_text = f"""
         产品名称：{product.name}
