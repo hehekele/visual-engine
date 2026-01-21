@@ -154,10 +154,12 @@ cython_debug/
 # Project Specific Data
 tests/
 src/
+data/products.json
 data/outputs/
 data/samples/
 data/*/
 !data/.gitkeep
+
 
 # Logs
 logs/
