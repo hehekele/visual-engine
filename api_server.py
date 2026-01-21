@@ -9,40 +9,73 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Optional
 from pathlib import Path
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
 from app.schemas import ProductInput, TaskStatus
 from app.services.pipeline import ProductImagePipeline
 from app.core.logging import logger, setup_logging
 from app.core.config import settings
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
-# Setup logging
+# 初始化日志配置
 setup_logging()
 
-app = FastAPI(title="Visual Engine API")
+# 初始化 FastAPI 应用
+app = FastAPI(
+    title="Visual Engine API",
+    description="电商视觉生成后端服务，负责任务调度和 AI 流水线编排。",
+    version="1.0.0"
+)
 
-# Enable CORS for the extension
+# -----------------------------------------------------------------------------
+# CORS 配置 (CORS Configuration)
+# -----------------------------------------------------------------------------
+# 允许来自浏览器插件的跨域请求。
+# 在生产环境中，'allow_origins' 应该限制为特定的域名或插件 ID。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify the extension ID
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Static files for serving generated images
+# -----------------------------------------------------------------------------
+# 静态文件服务 (Static File Serving)
+# -----------------------------------------------------------------------------
+# 配置数据存储路径
 DATA_ROOT = Path("data")
 DATA_OUTPUTS = DATA_ROOT / "outputs"
+
+# 确保必要的目录存在
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 DATA_OUTPUTS.mkdir(parents=True, exist_ok=True)
 
+# 挂载静态目录以服务生成的图片
 app.mount("/outputs", StaticFiles(directory=DATA_OUTPUTS), name="outputs")
 app.mount("/data", StaticFiles(directory=DATA_ROOT), name="data")
 
-# File-based database lock
+# -----------------------------------------------------------------------------
+# 全局状态与并发控制 (Global State & Concurrency Control)
+# -----------------------------------------------------------------------------
+# 用于同步写入文件级数据库 (products.json) 的锁
 db_lock = threading.Lock()
 
-def get_next_product_index():
+# 用于跟踪活跃任务状态的内存存储。
+# 注意：在多 Worker 的生产环境中，请替换为 Redis。
+tasks_db = {}
+
+# -----------------------------------------------------------------------------
+# 辅助函数 (Helper Functions)
+# -----------------------------------------------------------------------------
+
+def get_next_product_index() -> int:
+    """
+    通过读取 products.json 文件计算下一个可用的商品序号。
+    
+    Returns:
+        int: 下一个可用的自增序号。如果文件为空或不存在，默认为 1。
+    """
     with db_lock:
         json_path = settings.full_products_json_path
         if not json_path.exists():
@@ -53,14 +86,24 @@ def get_next_product_index():
                 data = json.load(f)
                 if not data:
                     return 1
-                # 过滤掉时间戳风格的异常序号（例如大于 1000000 的）
-                indices = [item.get('index', 0) for item in data if isinstance(item.get('index'), int) and item.get('index', 0) < 1000000]
+                # 过滤掉类似时间戳的异常序号（例如 > 1,000,000）以保持序列连续
+                indices = [
+                    item.get('index', 0) 
+                    for item in data 
+                    if isinstance(item.get('index'), int) and item.get('index', 0) < 1000000
+                ]
                 return max(indices) + 1 if indices else 1
         except Exception as e:
             logger.error(f"Error reading products.json: {e}")
             return 1
 
-def save_product_to_json(product_data):
+def save_product_to_json(product_data: dict) -> None:
+    """
+    线程安全地保存或更新商品数据到 products.json。
+    
+    Args:
+        product_data (dict): 要保存的商品信息字典。
+    """
     with db_lock:
         json_path = settings.full_products_json_path
         data = []
@@ -71,7 +114,7 @@ def save_product_to_json(product_data):
             except Exception as e:
                 logger.error(f"Error loading products.json: {e}")
         
-        # Check if index already exists to update instead of append
+        # 检查序号是否存在，以进行更新而不是追加
         existing_idx = -1
         for i, item in enumerate(data):
             if item.get('index') == product_data['index']:
@@ -89,57 +132,16 @@ def save_product_to_json(product_data):
         except Exception as e:
             logger.error(f"Error saving products.json: {e}")
 
-class GenerateRequest(BaseModel):
-    name: str
-    detail: str
-    attributes: Optional[str] = ""     # 商品属性
-    image_base64: Optional[str] = None  # Base64 encoded image
-    image_url: Optional[str] = None    # Fallback URL
-    image_path: Optional[str] = None   # 服务器端相对路径 (例如 /outputs/xxx.png)
-    product_index: Optional[int] = None # 复用已有的产品序号
-    gallery_images: List[str] = []     # 橱窗图列表 (用于存入 sub_images)
-    detail_images: List[str] = []      # 详情图列表 (用于存入 detail 目录)
-    need_white_bg: bool = False        # 是否需要先生成白底图
-    save_to_data: bool = True          # 是否保存到 data/序号 目录
-    white_bg_only: bool = False        # 是否仅生成白底图 (第一步)
-    
-class GenerateResponse(BaseModel):
-    task_id: str
-    status: str
-
-# In-memory task storage (for demo purposes)
-tasks_db = {}
-
-@app.post("/api/generate", response_model=GenerateResponse)
-async def generate_scene(request: GenerateRequest, background_tasks: BackgroundTasks):
-    task_id = str(uuid.uuid4())
-    
-    # 1. Create a temp directory for this task
-    task_dir = Path(f"data/temp/{task_id}")
-    task_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 2. Download the main image (simplified for now - extension can send base64)
-    # For now, let's assume extension sends the image content if possible, or we download it.
-    # To keep it simple, the extension will send base64 in a real scenario.
-    # But let's support image_url for now.
-    
-    # Initialize task status with support for progressive loading
-    tasks_db[task_id] = {
-        "status": "processing",
-        "phrases": [],         # Placeholder for scene descriptions
-        "images": [],          # Progressive image URLs
-        "images_base64": [],   # Progressive image Base64
-        "error": None
-    }
-    
-    # Start the pipeline in background
-    background_tasks.add_task(run_pipeline_task, task_id, request)
-    
-    return GenerateResponse(task_id=task_id, status="processing")
-
 def update_task_progress(task_id: str, phrases: List[str] = None, new_image_url: str = None, new_image_base64: str = None, status: str = None):
     """
-    Update task status in a thread-safe way for progressive loading.
+    线程安全地更新内存中的任务状态，供前端轮询。
+    
+    Args:
+        task_id (str): 任务的唯一标识符。
+        phrases (List[str], optional): 生成的提示词列表。
+        new_image_url (str, optional): 新生成图片的 URL。
+        new_image_base64 (str, optional): 新生成图片的 Base64 字符串。
+        status (str, optional): 新的状态字符串 (例如 'processing', 'completed', 'failed')。
     """
     with db_lock:
         if task_id not in tasks_db:
@@ -157,12 +159,95 @@ def update_task_progress(task_id: str, phrases: List[str] = None, new_image_url:
         if status is not None:
             tasks_db[task_id]["status"] = status
 
+# -----------------------------------------------------------------------------
+# 数据模型 (Data Models)
+# -----------------------------------------------------------------------------
+
+class GenerateRequest(BaseModel):
+    """
+    /api/generate 端点的请求模型。
+    """
+    name: str
+    detail: str
+    attributes: Optional[str] = ""      # 商品属性/规格
+    image_base64: Optional[str] = None  # Base64 编码的源图
+    image_url: Optional[str] = None     # 源图 URL (Fallback)
+    image_path: Optional[str] = None    # 服务端相对路径 (例如 /outputs/xxx.png)
+    product_index: Optional[int] = None # 如果提供，复用现有的商品序号
+    gallery_images: List[str] = []      # 需要下载的橱窗图 URL 列表
+    detail_images: List[str] = []       # 需要下载的详情图 URL 列表
+    need_white_bg: bool = False         # 是否触发去底步骤
+    save_to_data: bool = True           # 是否将数据持久化到磁盘结构
+    white_bg_only: bool = False         # 如果为 True，则在去底后停止
+
+class GenerateResponse(BaseModel):
+    """
+    任务创建的响应模型。
+    """
+    task_id: str
+    status: str
+
+# -----------------------------------------------------------------------------
+# API 端点 (API Endpoints)
+# -----------------------------------------------------------------------------
+
+@app.post("/api/generate", response_model=GenerateResponse)
+async def generate_scene(request: GenerateRequest, background_tasks: BackgroundTasks):
+    """
+    发起场景生成任务。
+    
+    此端点是非阻塞的。它初始化任务上下文并将繁重的工作卸载到后台任务。
+    """
+    task_id = str(uuid.uuid4())
+    
+    # 1. 为此任务创建一个临时目录
+    task_dir = Path(f"data/temp/{task_id}")
+    task_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 2. 在内存中初始化任务状态
+    tasks_db[task_id] = {
+        "status": "processing",
+        "phrases": [],         # 存储生成的场景描述
+        "images": [],          # 存储生成图片的 URL
+        "images_base64": [],   # 存储用于即时预览的 Base64 数据
+        "error": None
+    }
+    
+    # 3. 在后台调度流水线执行
+    background_tasks.add_task(run_pipeline_task, task_id, request)
+    
+    return GenerateResponse(task_id=task_id, status="processing")
+
+@app.get("/api/task/{task_id}")
+async def get_task_status(task_id: str):
+    """
+    获取特定任务的当前状态和结果。
+    前端用于轮询进度。
+    """
+    if task_id not in tasks_db:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return tasks_db[task_id]
+
+# -----------------------------------------------------------------------------
+# 后台任务逻辑 (Background Task Logic)
+# -----------------------------------------------------------------------------
+
 async def run_pipeline_task(task_id: str, request: GenerateRequest):
+    """
+    执行核心 AI 生成流水线。
+    
+    步骤:
+    1. 确定存储路径并下载资源 (橱窗/详情图)。
+    2. 解析源图片 (来自 Path, Base64 或 URL)。
+    3. 初始化 ProductImagePipeline。
+    4. 执行流水线 (仅去底 或 全流程生成)。
+    5. 完成或失败时更新任务状态。
+    """
     try:
         pipeline = ProductImagePipeline()
         index = request.product_index
         
-        # 1. Determine storage path
+        # --- 步骤 1: 确定存储路径 & 下载资源 ---
         if request.save_to_data:
             if index is None:
                 index = get_next_product_index()
@@ -171,7 +256,7 @@ async def run_pipeline_task(task_id: str, request: GenerateRequest):
             target_dir.mkdir(parents=True, exist_ok=True)
             img_path = target_dir / "main.jpg"
             
-            # Helper function for downloading images
+            # 辅助函数: 下载图片到指定目录
             import requests
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -197,13 +282,11 @@ async def run_pipeline_task(task_id: str, request: GenerateRequest):
                         logger.error(f"Failed to download image {url}: {e}")
                 return saved_paths
 
-            # 1.1 Save gallery images to sub_images
+            # 保存橱窗图和详情图
             saved_sub_images = download_to_dir(request.gallery_images, target_dir / "sub_images", "gallery")
-            
-            # 1.2 Save detail images to detail directory
             saved_detail_images = download_to_dir(request.detail_images, target_dir / "detail", "detail")
 
-            # Save info to JSON
+            # 持久化商品信息到 JSON
             product_info = {
                 "index": index,
                 "name": request.name,
@@ -215,21 +298,19 @@ async def run_pipeline_task(task_id: str, request: GenerateRequest):
                 "task_id": task_id
             }
             save_product_to_json(product_info)
-            # Store index in task status for frontend to reuse
+            # 更新任务状态中的商品序号
             tasks_db[task_id]["product_index"] = index
         else:
+            # 如果不保存到数据根目录，则使用临时目录
             task_dir = Path(f"data/temp/{task_id}")
             task_dir.mkdir(parents=True, exist_ok=True)
             img_path = task_dir / "main.jpg"
 
-        # 2. 获取正确的图片路径作为生图源
-        # 遵循设计：如果提供了 image_path（如白底图），则使用它；否则使用默认的 main.jpg
+        # --- 步骤 2: 解析源图片 ---
         active_image_path = img_path
         if request.image_path:
-            # Handle server-side path (from previous white-bg step)
-            # Example: /outputs/xxx.png or /data/序号/white_bg_main.jpg
+            # 情况 A: 图片已存在于服务器上 (例如来自上一步的白底图)
             rel_path = request.image_path.lstrip('/')
-            
             src_path = None
             if rel_path.startswith('outputs/'):
                 src_path = DATA_OUTPUTS / rel_path[8:]
@@ -237,18 +318,17 @@ async def run_pipeline_task(task_id: str, request: GenerateRequest):
                 src_path = DATA_ROOT / rel_path[5:]
             
             if src_path and src_path.exists():
-                # 不再执行 shutil.copy(src_path, img_path)，避免覆盖原始 main.jpg
                 active_image_path = src_path
                 logger.info(f"Using provided image source: {active_image_path}")
             else:
                 raise Exception(f"Image path not found or invalid format: {request.image_path}")
         elif request.image_base64:
-            # Handle base64
+            # 情况 B: 提供了 Base64 数据
             header, data = request.image_base64.split(',', 1) if ',' in request.image_base64 else (None, request.image_base64)
             with open(img_path, "wb") as f:
                 f.write(base64.b64decode(data))
         elif request.image_url:
-            # Fallback to download
+            # 情况 C: 从 URL 下载
             import requests
             response = requests.get(request.image_url, timeout=10)
             with open(img_path, "wb") as f:
@@ -256,83 +336,48 @@ async def run_pipeline_task(task_id: str, request: GenerateRequest):
         else:
             raise Exception("No image provided (base64, URL or path)")
 
-        # 3. Create ProductInput
+        # --- 步骤 3: 准备流水线输入 ---
         product = ProductInput(
             name=request.name,
             detail=request.detail,
             attributes=request.attributes,
-            sample_dir=str(img_path.parent.relative_to(DATA_ROOT)), # 使用相对 DATA_ROOT 的路径
+            sample_dir=str(img_path.parent.relative_to(DATA_ROOT)), 
             image=active_image_path.relative_to(DATA_ROOT) if active_image_path.is_absolute() else active_image_path
         )
         
-        # Define progress callback
-        def on_pipeline_progress(progress_data):
-            # Handle phrases
-            if "phrases" in progress_data:
-                update_task_progress(task_id, phrases=progress_data["phrases"])
-            
-            # Handle single image complete
-            if "new_image" in progress_data:
-                img_path_abs = Path(progress_data["new_image"]).resolve()
-                
-                # Try to resolve relative to DATA_OUTPUTS first
-                try:
-                    rel_path = img_path_abs.relative_to(DATA_OUTPUTS.resolve())
-                    url = f"/outputs/{rel_path.as_posix()}"
-                except ValueError:
-                    # Fallback to DATA_ROOT
-                    try:
-                        rel_path = img_path_abs.relative_to(DATA_ROOT.resolve())
-                        url = f"/data/{rel_path.as_posix()}"
-                    except ValueError:
-                        # Absolute path or outside data root
-                        url = str(img_path_abs)
-                
-                # Get Base64
-                base64_data = ""
-                try:
-                    if img_path_abs.exists():
-                        with open(img_path_abs, "rb") as f:
-                            base64_data = f"data:image/png;base64,{base64.b64encode(f.read()).decode()}"
-                except Exception as e:
-                    logger.error(f"Error encoding progressive image: {e}")
-                
-                update_task_progress(task_id, new_image_url=url, new_image_base64=base64_data)
-
-        # Run pipeline
+        # --- 步骤 4: 执行流水线 ---
         if request.white_bg_only:
+            # 子流程: 仅生成白底图
             white_bg_path = await pipeline.run_white_bg_only(product)
             white_bg_path_abs = Path(white_bg_path).resolve()
             
-            # 确保保存到正确的序号目录 (data/序号)
+            # 保存到永久位置
             product_index = request.product_index if request.product_index is not None else get_next_product_index()
             task_dir = DATA_ROOT / str(product_index)
             task_dir.mkdir(parents=True, exist_ok=True)
             
-            # 使用统一的文件名 white_bg_main.jpg
             output_white_bg = task_dir / "white_bg_main.jpg"
-            
-            # 💡 修复：如果新生成的路径和目标路径相同，或者目标文件已存在，先处理冲突
             white_bg_path_p = Path(white_bg_path).resolve()
             output_white_bg_p = output_white_bg.resolve()
             
+            # 避免自我覆盖
             if white_bg_path_p == output_white_bg_p:
                 logger.info(f"New white bg is already at target: {output_white_bg_p}")
             else:
                 if output_white_bg_p.exists():
-                    logger.info(f"Removing existing white bg before overwrite: {output_white_bg_p}")
                     output_white_bg_p.unlink()
                 shutil.copy(white_bg_path, output_white_bg)
             
             output_white_bg_abs = output_white_bg.resolve()
             
-            # 生成 URL (相对于 DATA_ROOT)
+            # 生成返回 URL
             try:
                 rel_path = output_white_bg_abs.relative_to(DATA_ROOT.resolve())
                 url = f"/data/{rel_path.as_posix()}"
             except ValueError:
                 url = str(output_white_bg_abs)
             
+            # 编码 Base64
             white_bg_base64 = ""
             try:
                 if output_white_bg_abs.exists():
@@ -341,19 +386,61 @@ async def run_pipeline_task(task_id: str, request: GenerateRequest):
             except Exception as e:
                 logger.error(f"Error encoding white_bg to base64: {e}")
 
-            # 清空 images 重新填充，确保前端获取的是最新单张图
+            # 更新任务状态
             with db_lock:
                 tasks_db[task_id]["images"] = [url]
                 tasks_db[task_id]["images_base64"] = [white_bg_base64]
-                tasks_db[task_id]["white_bg_base64"] = white_bg_base64 # 兼容旧逻辑
+                tasks_db[task_id]["white_bg_base64"] = white_bg_base64
                 tasks_db[task_id]["status"] = "completed"
                 tasks_db[task_id]["product_index"] = product_index
         else:
-            # 运行完整流程（支持进度回调）
-            result_task = await pipeline.run(product, need_white_bg=request.need_white_bg, on_progress=on_pipeline_progress)
+            # 子流程: 全流程生成
+            result_task = await pipeline.run(
+                product, 
+                need_white_bg=request.need_white_bg
+            )
             
             if result_task.status == TaskStatus.COMPLETED:
-                update_task_progress(task_id, status="completed")
+                # 任务完成，提取生成的提示词并更新状态
+                final_phrases = []
+                if result_task.phrase_result and result_task.phrase_result.phrases:
+                    final_phrases = [p.scene_description for p in result_task.phrase_result.phrases]
+                
+                # 提取生成的所有图片
+                final_images = []
+                final_images_base64 = []
+                
+                if result_task.image_result and result_task.image_result.images:
+                    for img_obj in result_task.image_result.images:
+                        img_path_abs = Path(img_obj.image_path).resolve()
+                        
+                        # 解析图片 URL
+                        try:
+                            rel_path = img_path_abs.relative_to(DATA_OUTPUTS.resolve())
+                            url = f"/outputs/{rel_path.as_posix()}"
+                        except ValueError:
+                            try:
+                                rel_path = img_path_abs.relative_to(DATA_ROOT.resolve())
+                                url = f"/data/{rel_path.as_posix()}"
+                            except ValueError:
+                                url = str(img_path_abs)
+                        final_images.append(url)
+                        
+                        # 编码 Base64
+                        try:
+                            if img_path_abs.exists():
+                                with open(img_path_abs, "rb") as f:
+                                    base64_data = f"data:image/png;base64,{base64.b64encode(f.read()).decode()}"
+                                    final_images_base64.append(base64_data)
+                        except Exception as e:
+                            logger.error(f"Error encoding final image: {e}")
+
+                # 一次性更新所有结果
+                with db_lock:
+                    tasks_db[task_id]["phrases"] = final_phrases
+                    tasks_db[task_id]["images"] = final_images
+                    tasks_db[task_id]["images_base64"] = final_images_base64
+                    tasks_db[task_id]["status"] = "completed"
             else:
                 update_task_progress(task_id, status="failed")
                 tasks_db[task_id]["error"] = result_task.error
@@ -363,12 +450,7 @@ async def run_pipeline_task(task_id: str, request: GenerateRequest):
         tasks_db[task_id]["status"] = "failed"
         tasks_db[task_id]["error"] = str(e)
 
-@app.get("/api/task/{task_id}")
-async def get_task_status(task_id: str):
-    if task_id not in tasks_db:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return tasks_db[task_id]
-
 if __name__ == "__main__":
     import uvicorn
+    # 使用 uvicorn 启动服务器
     uvicorn.run(app, host="0.0.0.0", port=8000)

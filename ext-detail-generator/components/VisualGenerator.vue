@@ -149,28 +149,20 @@
           </div>
           
           <div class="results-list">
-            <!-- 优先级：如果正在生成且有 phrases，按 phrases 数量占位 -->
             <div 
-              v-for="(phrase, index) in (phrases.length > 0 ? phrases : resultImages)" 
+              v-for="(img, index) in resultImages" 
               :key="index" 
               class="result-item-vertical"
             >
               <div class="image-wrapper">
-                <template v-if="resultImagesBase64[index] || resultImages[index]">
-                  <img 
-                    :src="resultImagesBase64[index] || getFullUrl(resultImages[index])" 
-                    class="result-img-full" 
-                    @error="handleImageError($event, index)"
-                  />
-                </template>
-                <!-- 骨架屏占位 -->
-                <div v-else class="skeleton-placeholder">
-                  <div class="skeleton-shimmer"></div>
-                  <div class="skeleton-text">AI 正在绘制第 {{ index + 1 }} 张图...</div>
-                </div>
+                <img 
+                  :src="resultImagesBase64[index] || getFullUrl(img)" 
+                  class="result-img-full" 
+                  @error="handleImageError($event, index)"
+                />
               </div>
-              <div class="result-info">
-                <p class="phrase-text">{{ phrases[index] || '正在生成描述...' }}</p>
+              <div class="result-info" v-if="phrases[index]">
+                <p class="phrase-text">{{ phrases[index] }}</p>
               </div>
             </div>
           </div>
@@ -189,6 +181,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
+import { browser } from 'wxt/browser';
 
 const showPanel = ref(false);
 const status = ref<'idle' | 'grabbed' | 'white_bg_review' | 'processing' | 'completed' | 'failed'>('idle');
@@ -635,17 +628,6 @@ const getBase64Image = (url: string): Promise<string> => {
   });
 };
 
-const urlToBase64 = async (url: string): Promise<string> => {
-  const resp = await fetch(url);
-  const blob = await resp.blob();
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-};
-
 const handleGenerateWhiteBg = async () => {
   isGeneratingWhiteBg.value = true;
   error.value = '';
@@ -775,24 +757,22 @@ const startPolling = () => {
 
       const data = response.data;
       
-      // 更新提示词（占位用）
-      if (data.phrases && data.phrases.length > 0) {
-        phrases.value = data.phrases;
-      }
-      
-      // 更新已生成的图片
-      if (data.images && data.images.length > 0) {
-        resultImages.value = data.images;
-      }
-      if (data.images_base64 && data.images_base64.length > 0) {
-        resultImagesBase64.value = data.images_base64;
-      }
-      if (data.product_index) {
-        currentProductIndex.value = data.product_index;
-      }
-      
       if (data.status === 'completed') {
         stopPolling();
+        // 任务完成，一次性更新结果
+        if (data.phrases && data.phrases.length > 0) {
+          phrases.value = data.phrases;
+        }
+        if (data.images && data.images.length > 0) {
+          resultImages.value = data.images;
+        }
+        if (data.images_base64 && data.images_base64.length > 0) {
+          resultImagesBase64.value = data.images_base64;
+        }
+        if (data.product_index) {
+          currentProductIndex.value = data.product_index;
+        }
+        
         status.value = 'completed';
         isGenerating.value = false;
       } else if (data.status === 'failed') {
@@ -1304,46 +1284,6 @@ const pollTaskInternal = async (taskId: string): Promise<{images: string[], whit
   overflow: hidden;
 }
 
-.skeleton-placeholder {
-  width: 100%;
-  height: 100%;
-  background: #eee;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  overflow: hidden;
-}
-
-.skeleton-shimmer {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0) 0,
-    rgba(255, 255, 255, 0.2) 20%,
-    rgba(255, 255, 255, 0.5) 60%,
-    rgba(255, 255, 255, 0)
-  );
-  animation: shimmer 2s infinite;
-}
-
-@keyframes shimmer {
-  100% {
-    transform: translateX(100%);
-  }
-}
-
-.skeleton-text {
-  font-size: 12px;
-  color: #999;
-  z-index: 1;
-}
-
 .generating-hint {
   display: flex;
   align-items: center;
@@ -1464,7 +1404,7 @@ const pollTaskInternal = async (taskId: string): Promise<{images: string[], whit
   color: #ff4d4f;
   padding: 10px;
   background: #fff2f0;
-  border: 1px border #ffccc7;
+  border: 1px solid #ffccc7;
   border-radius: 4px;
   margin: 5px 0;
 }

@@ -114,14 +114,6 @@ class ImageGenerator:
                         prompt=prompt
                     ))
                     logger.info(f"  > Successfully saved to {output_path}")
-                    
-                    # 💡 进度回调：通知单张图片已生成
-                    if on_image_complete:
-                        try:
-                            # 确保传入的是绝对路径
-                            on_image_complete(output_path.absolute())
-                        except Exception as e:
-                            logger.error(f"Error in on_image_complete callback: {e}")
                 else:
                     logger.warning(f"  > Provider failed to generate image {phrase.scene_no}")
                     
