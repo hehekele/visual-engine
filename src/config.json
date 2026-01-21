@@ -1,0 +1,16 @@
+{
+  "api_keys": {
+    "dashscope": "xxxx",
+    "gemini": "xxxx"
+  },
+  "models": {
+    "qwen_vl": "qwen-vl-plus-latest",
+    "qwen_text": "qwen-plus",
+    "qwen_image_edit": "qwen-image-edit-plus",
+    "gemini_edit": "gemini-2.5-flash-image"
+  },
+  "prompts": {
+    "qwen_fixed": "\n请根据以下描述，将人物的穿搭信息整理为JSON格式，字段名及要求如下：\n1. **字段定义**：\n   - **基础服饰**：\n     - `hat`（帽子）\n     - `top`（上衣）\n     - `inner`（内衬）\n     - `pants`（长裤）\n     - `shorts`（短裤）\n     - `skirt`（短裙）\n     - `dress`（连衣裙）\n     - `coat`（大衣/风衣等长外套）\n     - `jacket`（夹克/羽绒服/短外套）\n     - `shoes`（鞋子）\n     - `bag`（包包）\n     - `socks`（袜子）\n   - **饰品**：\n     - `ring`（戒指）\n     - `necklace`（项链）\n     - `belt`（腰带）\n     - `glass`（眼镜）\n     - `watch`（手表）\n\n2. **格式要求**：\n   - 每个字段的值必须是一个对象，包含两个属性：\n     - `name`：服饰/饰品的中文名称\n     - `color`：颜色名称（如“黑色”、“浅蓝色”等）\n     - 如果没有，就标注null\n     \n3. **示例格式**：\n   ```json\n   {\n     \"hat\": {\"name\": \"针织帽\", \"color\": \"黄色\"},\n     \"top\": {\"name\": \"针织开衫\", \"color\": \"米色\"},\n     \"inner\": {\"name\": \"圆领内搭\", \"color\": \"白色\"},\n     \"pants\": null,\n     \"shorts\": null,\n…….\n   }\n4. **特殊指令**：\n1、只保留不是null的数据\n2、只输出json内容，不需要其他的信息\n",
+    "extra_edit": "\n按照如上列表，把图像中的服饰穿搭一个一个的找出来，保持服饰的式样和颜色不变。\n### 指令  ###  \n1、摆放造型类似于穿起来的垂直感和立体感\n2、office suit风格，\n3、俯拍视角，\n4、陈列的顺序综合图像中人物的穿搭顺序和美感，\n5、高奢感的穿搭组合展示图，\n6、有质感的纯白背景，\n7、不要漏出人体，包括人体局部也不行，\n8、如果有文字和水印，先去掉文字和水印\n9、光线正着打过去，形成无影灯的效果\n10、保持图像的高分辨率和细节\n\n你生成的图像是:\n"
+  }
+}
